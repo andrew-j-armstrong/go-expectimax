@@ -1,10 +1,8 @@
 package expectimax
 
 import (
-	"errors"
 	"fmt"
 	"log"
-	"reflect"
 	"time"
 
 	"github.com/carbon-12/go-extensions"
@@ -116,19 +114,7 @@ func (this *Expectimax) RunExpectimax() {
 				}
 			}
 
-			childNode, ok := this.rootNode.children[move]
-
-			if !ok {
-				fmt.Print("Received move:", move, reflect.TypeOf(move))
-				for childMove := range this.rootNode.children {
-					fmt.Print("Expected move:", childMove, reflect.TypeOf(childMove))
-				}
-				log.Fatal(errors.New("Game registered unexpected move!"))
-			}
-
-			this.rootNode = childNode
-			this.rootNode.game = childNode.GetGame()
-			this.rootNode.parent = nil
+			this.rootNode = this.rootNode.descendToChild(move)
 
 			if this.rootNode.game.IsGameOver() {
 				break
@@ -178,6 +164,7 @@ func (this *Expectimax) RunExpectimax() {
 
 				if unexploredNode != nil {
 					if unexploredNode.explorationStatus != Unexplored {
+						unexploredNode.PrintLineage()
 						log.Fatal(fmt.Sprintf("%p is not in Unexplored state! State: %d\n", unexploredNode, unexploredNode.explorationStatus))
 					}
 
@@ -201,6 +188,8 @@ func (this *Expectimax) RunExpectimax() {
 }
 
 func NewExpectimax(game Game, heuristic ExpectimaxHeuristic, calculateChildLikelihood ExpectimaxChildLikelihoodFunc, maxNodeCount int) *Expectimax {
+	initNodeMemoryPool()
+
 	return &Expectimax{
 		game,
 		heuristic,
