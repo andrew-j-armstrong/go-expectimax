@@ -6,12 +6,12 @@ type exploreNodeWorker struct {
 	terminate                     bool
 }
 
-func (worker *exploreNodeWorker) ExploreNodeThread(heuristic ExpectimaxHeuristic) {
+func (worker *exploreNodeWorker) ExploreNodeThread(heuristic ExpectimaxHeuristic, calculateChildLikelihoodFunc ExpectimaxChildLikelihoodFunc) {
 	unexploredNodeChannel := make(chan *expectimaxNode)
 	for !worker.terminate {
 		worker.unexploredNodeReceiverChannel <- unexploredNodeChannel
 		parent := <-unexploredNodeChannel
-		parent.Explore(heuristic)
+		parent.Explore(heuristic, calculateChildLikelihoodFunc)
 		worker.exploredNodeChannel <- parent
 	}
 }

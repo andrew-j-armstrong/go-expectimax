@@ -59,11 +59,18 @@ func getNewNode() *expectimaxNode {
 }
 
 func (node *expectimaxNode) reset() {
+	if node.mostLikelyUnexploredDescendent != nil && node.mostLikelyUnexploredDescendent != node {
+		node.mostLikelyUnexploredDescendent.decrementReference()
+	}
+
 	node.game = nil
 	node.parent = nil
 	if node.children != nil {
-		for key := range node.children {
-			delete(node.children, key)
+		for move, child := range node.children {
+			if child.parent == node {
+				child.parent = nil
+			}
+			delete(node.children, move)
 		}
 	} else {
 		node.children = make(map[interface{}]*expectimaxNode)
@@ -102,7 +109,6 @@ func (node *expectimaxNode) incrementReference() bool {
 func (node *expectimaxNode) decrementReference() {
 	node.referenceCount-- // Needs to be atomic
 	if node.referenceCount == 0 && node.markedForDeletion {
-		fmt.Printf("%p: Deleted\n", node)
 		node.reset()
 		expectimaxNodeMemoryPool.Put(node)
 	}
@@ -113,6 +119,7 @@ func (node *expectimaxNode) deleteTree(exemptChildNode *expectimaxNode) {
 		return // Already marked for deletion
 	}
 	defer node.decrementReference()
+
 	node.markedForDeletion = true
 	for _, childNode := range node.children {
 		childNode.parent = nil
@@ -123,17 +130,35 @@ func (node *expectimaxNode) deleteTree(exemptChildNode *expectimaxNode) {
 }
 
 func (node *expectimaxNode) descendToChild(move interface{}) *expectimaxNode {
+	if !node.incrementReference() {
+		log.Fatal("Trying to descend to a child after the parent has already been marked for deletion")
+	}
+
 	childNode := node.children[move]
+	if !childNode.incrementReference() {
+		log.Fatal("Trying to descend to a child after the parent has already been marked for deletion")
+	}
+	defer childNode.decrementReference()
+
 	childNode.game = childNode.GetGame()
 	childNode.parent = nil
-	node.deleteTree(childNode)
+
+	node.decrementReference()
+	go node.deleteTree(childNode)
+
 	return childNode
 }
 
 func (node *expectimaxNode) addDescendents(descendentCount int) {
+	if !node.incrementReference() {
+		return
+	}
+	defer node.decrementReference()
+
 	node.descendentCount += descendentCount
-	if node.parent != nil {
-		node.parent.addDescendents(descendentCount)
+	parent := node.parent
+	if parent != nil {
+		parent.addDescendents(descendentCount)
 	}
 }
 
@@ -146,9 +171,15 @@ func (node *expectimaxNode) PrintToDepth(depth int) {
 }
 
 func (node *expectimaxNode) PrintLineage() {
+	if !node.incrementReference() {
+		return
+	}
+	defer node.decrementReference()
+
 	node.print("", 0, 1.0)
-	if node.parent != nil {
-		node.parent.PrintLineage()
+	parent := node.parent
+	if parent != nil {
+		parent.PrintLineage()
 	}
 }
 
@@ -162,11 +193,13 @@ func (node *expectimaxNode) GetGame() Game {
 		return node.game.CloneGeneric().(Game)
 	}
 
-	if node.parent == nil {
+	parent := node.parent
+
+	if parent == nil {
 		return nil
 	}
 
-	game := node.parent.GetGame()
+	game := parent.GetGame()
 	if game == nil {
 		return nil
 	}
@@ -181,7 +214,6 @@ func (node *expectimaxNode) print(key string, depth int, likelihood float64) {
 	}
 	defer node.decrementReference()
 
-	fmt.Printf("%s: %p parent:%p likelihood:%f children:%d explorationStatus:%d heuristic:%f value:%f unexplored:%p likelihood:%f descendents:%d depth:%f\n", key, node, node.parent, likelihood, len(node.children), node.explorationStatus, node.heuristic, node.value, node.mostLikelyUnexploredDescendent, node.mostLikelyUnexploredDescendentLikelihood, node.descendentCount, node.averageDepth)
 	if depth > 1 {
 		depth--
 		for childMove, childNode := range node.children {
@@ -207,12 +239,13 @@ func (node *expectimaxNode) updateAverageDepth() {
 		node.averageDepth = 1.0 + averageDepth/float64(len(node.children))
 	}
 
-	if node.parent != nil {
-		node.parent.updateAverageDepth()
+	parent := node.parent
+	if parent != nil {
+		parent.updateAverageDepth()
 	}
 }
 
-func (node *expectimaxNode) updateMostLikelyUnexploredDescendent() {
+func (node *expectimaxNode) updateMostLikelyUnexploredDescendent(recursive bool, printDebug bool) {
 	if !node.incrementReference() {
 		return
 	}
@@ -228,12 +261,12 @@ func (node *expectimaxNode) updateMostLikelyUnexploredDescendent() {
 	case WaitingForExploration, Exploring:
 		mostLikelyUnexploredDescendent = nil
 		mostLikelyUnexploredDescendentLikelihood = 0.0
-	case Explored, Archived:
+	case Archived, Explored:
 		mostLikelyUnexploredDescendent = nil
 		mostLikelyUnexploredDescendentLikelihood = 0.0
 
 		for childMove, child := range node.children {
-			if child.mostLikelyUnexploredDescendent == nil {
+			if child.mostLikelyUnexploredDescendent == nil || (child.explorationStatus != Unexplored && child.explorationStatus != Archived) {
 				continue
 			}
 
@@ -247,18 +280,31 @@ func (node *expectimaxNode) updateMostLikelyUnexploredDescendent() {
 	}
 
 	if mostLikelyUnexploredDescendent != node.mostLikelyUnexploredDescendent || mostLikelyUnexploredDescendentLikelihood != node.mostLikelyUnexploredDescendentLikelihood {
+		if node.mostLikelyUnexploredDescendent != nil && node.mostLikelyUnexploredDescendent != node {
+			node.mostLikelyUnexploredDescendent.decrementReference()
+		}
+		if mostLikelyUnexploredDescendent != nil && mostLikelyUnexploredDescendent != node {
+			mostLikelyUnexploredDescendent.incrementReference()
+		}
 		node.mostLikelyUnexploredDescendent = mostLikelyUnexploredDescendent
 		node.mostLikelyUnexploredDescendentLikelihood = mostLikelyUnexploredDescendentLikelihood
 
-		if node.parent != nil {
-			node.parent.updateMostLikelyUnexploredDescendent()
+		parent := node.parent
+
+		if recursive && parent != nil {
+			parent.updateMostLikelyUnexploredDescendent(true, printDebug)
 		}
 	}
 }
 
 func (node *expectimaxNode) setWaitingForExploration() {
+	if !node.incrementReference() {
+		return
+	}
+	defer node.decrementReference()
+
 	node.explorationStatus = WaitingForExploration
-	node.updateMostLikelyUnexploredDescendent()
+	node.updateMostLikelyUnexploredDescendent(true, true)
 }
 
 func NewBaseNode(game Game) *expectimaxNode {
@@ -267,13 +313,15 @@ func NewBaseNode(game Game) *expectimaxNode {
 	return node
 }
 
-func (node *expectimaxNode) Explore(heuristic ExpectimaxHeuristic) {
+func (node *expectimaxNode) Explore(heuristic ExpectimaxHeuristic, calculateChildLikelihoodFunc ExpectimaxChildLikelihoodFunc) {
 	if !node.incrementReference() {
 		return
 	}
 	defer node.decrementReference()
 
-	fmt.Printf("%p: Exploring\n", node)
+	if node.mostLikelyUnexploredDescendent != nil && node.mostLikelyUnexploredDescendent != node {
+		node.mostLikelyUnexploredDescendent.decrementReference()
+	}
 
 	node.explorationStatus = Exploring
 	node.mostLikelyUnexploredDescendent = nil
@@ -296,8 +344,6 @@ func (node *expectimaxNode) Explore(heuristic ExpectimaxHeuristic) {
 		childNode.value = childHeuristic
 		childNode.lastMove = move
 
-		fmt.Printf("%p: Unexplored\n", childNode)
-
 		node.children[move] = childNode
 		node.childLikelihood[move] = 0
 		node.childExploreProbability[move] = 0
@@ -307,12 +353,7 @@ func (node *expectimaxNode) Explore(heuristic ExpectimaxHeuristic) {
 	node.averageDepth = 1.0
 	node.explorationStatus = Explored
 
-	fmt.Printf("%p: Explored\n", node)
-
-	if node.explorationStatus == Explored && node.mostLikelyUnexploredDescendent == node {
-		node.PrintLineage()
-		log.Fatal("How did I get here???")
-	}
+	node.calculateChildLikelihood(calculateChildLikelihoodFunc, false)
 }
 
 func (node *expectimaxNode) getChildValue(childMove interface{}) float64 {
@@ -324,33 +365,57 @@ func (node *expectimaxNode) getChildValue(childMove interface{}) float64 {
 	return childNode.value
 }
 
-func (node *expectimaxNode) recursiveCalculateChildLikelihood(calculateChildLikelihood ExpectimaxChildLikelihoodFunc) {
+func (node *expectimaxNode) calculateChildLikelihood(calculateChildLikelihoodFunc ExpectimaxChildLikelihoodFunc, recursive bool) {
 	if !node.incrementReference() {
 		return
 	}
 	defer node.decrementReference()
 
-	calculateChildLikelihood(node.GetGame, node.getChildValue, &node.childLikelihood)
+	calculateChildLikelihoodFunc(node.GetGame, node.getChildValue, &node.childLikelihood)
 
 	for move, likelihood := range node.childLikelihood {
-		node.childExploreProbability[move] = (0.1 / float64(len(node.childLikelihood))) + 0.9*likelihood
+		node.childExploreProbability[move] = (0.1 / float64(len(node.childLikelihood))) + 0.9*likelihood // 10% spread for exploration regardless of likelihood
 	}
 
+	var value float64
 	if len(node.children) == 0 {
-		node.value = node.heuristic
+		value = node.heuristic
 	} else {
-		node.value = 0.0
 		for childMove, childNode := range node.children {
-			node.value += node.childLikelihood[childMove] * childNode.value
+			value += node.childLikelihood[childMove] * childNode.value
 		}
 	}
 
-	if math.IsNaN(node.value) {
+	if math.IsNaN(value) {
 		node.Print()
 		log.Fatal("NaN value in recursiveCalculateChildLikelihood!")
 	}
 
-	if node.parent != nil {
-		node.parent.recursiveCalculateChildLikelihood(calculateChildLikelihood)
+	parent := node.parent
+	if recursive && value != node.value && parent != nil {
+		node.value = value
+		node.updateMostLikelyUnexploredDescendent(false, false)
+		parent.calculateChildLikelihood(calculateChildLikelihoodFunc, true)
+	} else {
+		node.updateMostLikelyUnexploredDescendent(recursive, false)
+	}
+}
+
+func (node *expectimaxNode) processExploredNode(calculateChildLikelihoodFunc ExpectimaxChildLikelihoodFunc) {
+	if !node.incrementReference() {
+		return
+	}
+	defer node.decrementReference()
+
+	node.explorationStatus = Archived
+
+	parent := node.parent
+	if parent != nil {
+		if parent.incrementReference() {
+			defer parent.decrementReference()
+			parent.calculateChildLikelihood(calculateChildLikelihoodFunc, true)
+			parent.updateAverageDepth()
+			parent.addDescendents(len(node.children))
+		}
 	}
 }

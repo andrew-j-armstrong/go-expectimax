@@ -13,24 +13,15 @@ type ExpectimaxHeuristic func(game Game) float64
 type ExpectimaxChildLikelihoodFunc func(getGame func() Game, getChildValue func(interface{}) float64, childLikelihood *extensions.ValueMap)
 
 type Expectimax struct {
-	game                     Game // Current game state
-	heuristic                ExpectimaxHeuristic
-	calculateChildLikelihood ExpectimaxChildLikelihoodFunc
-	rootNode                 *expectimaxNode
-	bestMoveChannelReceiver  chan (chan<- interface{})
-	nextMoveChannelReceiver  chan (chan<- *extensions.ValueMap)
-	maxNodeCount             int
-}
-
-func (this *Expectimax) processExploredNode(parent *expectimaxNode) {
-	//fmt.Printf("Processing %p from the explored channel.\n", parent)
-	parent.recursiveCalculateChildLikelihood(this.calculateChildLikelihood)
-	parent.updateMostLikelyUnexploredDescendent()
-	parent.updateAverageDepth()
-	if parent.parent != nil {
-		parent.parent.addDescendents(len(parent.children))
-	}
-	parent.explorationStatus = Archived
+	game                          Game // Current game state
+	heuristic                     ExpectimaxHeuristic
+	calculateChildLikelihood      ExpectimaxChildLikelihoodFunc
+	rootNode                      *expectimaxNode
+	bestMoveChannelReceiver       chan (chan<- interface{})
+	nextMoveChannelReceiver       chan (chan<- *extensions.ValueMap)
+	unexploredNodeReceiverChannel chan chan<- *expectimaxNode
+	exploredNodeChannel           chan *expectimaxNode
+	maxNodeCount                  int
 }
 
 func (this *Expectimax) GetBestMove() interface{} {
@@ -54,7 +45,10 @@ func (this *Expectimax) IsCurrentlySearching() bool {
 		return false
 	}
 
-	return this.rootNode.descendentCount < this.maxNodeCount
+	return this.rootNode.descendentCount < this.maxNodeCount &&
+		(this.rootNode.mostLikelyUnexploredDescendent != nil ||
+			len(this.unexploredNodeReceiverChannel) != expectimaxWorkerCount ||
+			len(this.exploredNodeChannel) != 0)
 }
 
 func (this *Expectimax) sendBestMove(bestMoveChannel chan<- interface{}) {
@@ -78,21 +72,33 @@ func (this *Expectimax) sendBestMove(bestMoveChannel chan<- interface{}) {
 	}
 }
 
+const expectimaxWorkerCount int = 10
+
 func (this *Expectimax) RunExpectimax() {
 	this.rootNode = NewBaseNode(this.game)
 
-	moveListener := make(chan interface{}, 100)
+	moveListener := make(chan interface{}, 4)
 	this.game.RegisterMoveListenerGeneric(moveListener)
 
-	unexploredNodeReceiverChannel := make(chan chan<- *expectimaxNode, 100)
-	exploredNodeChannel := make(chan *expectimaxNode, 100)
-	exploreNodeWorkers := make([]*exploreNodeWorker, 0, 10)
+	this.unexploredNodeReceiverChannel = make(chan chan<- *expectimaxNode, expectimaxWorkerCount)
+	this.exploredNodeChannel = make(chan *expectimaxNode, 10*expectimaxWorkerCount)
+	exploreNodeWorkers := make([]*exploreNodeWorker, 0, expectimaxWorkerCount)
 
-	for i := 0; i < 10; i++ {
-		exploreNodeWorker := NewExploreNodeWorker(unexploredNodeReceiverChannel, exploredNodeChannel)
+	for i := 0; i < expectimaxWorkerCount; i++ {
+		exploreNodeWorker := NewExploreNodeWorker(this.unexploredNodeReceiverChannel, this.exploredNodeChannel)
 		exploreNodeWorkers = append(exploreNodeWorkers, exploreNodeWorker)
-		go exploreNodeWorker.ExploreNodeThread(this.heuristic)
+		go exploreNodeWorker.ExploreNodeThread(this.heuristic, this.calculateChildLikelihood)
 	}
+
+	exploreNodeCount := 0
+
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			fmt.Printf("Explore Count: %d. Waiting workers: %d. Allocated nodes: %d. Expected result: %g\n", exploreNodeCount, len(this.unexploredNodeReceiverChannel), this.rootNode.descendentCount, this.rootNode.value)
+			exploreNodeCount = 0
+		}
+	}()
 
 	for {
 		select {
@@ -105,12 +111,13 @@ func (this *Expectimax) RunExpectimax() {
 			switch this.rootNode.explorationStatus {
 			case Unexplored:
 				// Unexplored and not waiting for exploration, so just explore it now
-				this.rootNode.Explore(this.heuristic)
-				this.processExploredNode(this.rootNode)
+				this.rootNode.Explore(this.heuristic, this.calculateChildLikelihood)
+				this.rootNode.processExploredNode(this.calculateChildLikelihood)
 			case WaitingForExploration, Exploring:
 				for this.rootNode.explorationStatus != Archived {
-					exploredNode := <-exploredNodeChannel
-					this.processExploredNode(exploredNode)
+					exploredNode := <-this.exploredNodeChannel
+					exploredNode.processExploredNode(this.calculateChildLikelihood)
+					exploredNode.decrementReference()
 				}
 			}
 
@@ -120,8 +127,10 @@ func (this *Expectimax) RunExpectimax() {
 				break
 			}
 
-		case exploredNode := <-exploredNodeChannel:
-			this.processExploredNode(exploredNode)
+		case exploredNode := <-this.exploredNodeChannel:
+			exploreNodeCount++
+			exploredNode.processExploredNode(this.calculateChildLikelihood)
+			go exploredNode.decrementReference()
 
 		case bestMoveChannel := <-this.bestMoveChannelReceiver:
 			if len(moveListener) > 0 {
@@ -139,7 +148,7 @@ func (this *Expectimax) RunExpectimax() {
 				break
 			}
 
-			if this.rootNode.descendentCount < this.maxNodeCount/100 && this.rootNode.mostLikelyUnexploredDescendent != nil {
+			if this.rootNode.descendentCount < this.maxNodeCount/100 && this.rootNode.mostLikelyUnexploredDescendent != nil && this.IsCurrentlySearching() {
 				// Wait for more depth to be explored
 				go func() {
 					time.Sleep(time.Duration(100) * time.Millisecond)
@@ -154,26 +163,25 @@ func (this *Expectimax) RunExpectimax() {
 				nextMoveChannel <- &nextMoveMap
 			}
 
-		case unexploredNodeReceiver := <-unexploredNodeReceiverChannel:
-
-			if !this.IsCurrentlySearching() {
-				time.Sleep(time.Duration(50) * time.Millisecond)
-				unexploredNodeReceiverChannel <- unexploredNodeReceiver
-			} else {
-				unexploredNode := this.rootNode.mostLikelyUnexploredDescendent
-
-				if unexploredNode != nil {
-					if unexploredNode.explorationStatus != Unexplored {
-						unexploredNode.PrintLineage()
-						log.Fatal(fmt.Sprintf("%p is not in Unexplored state! State: %d\n", unexploredNode, unexploredNode.explorationStatus))
-					}
-
-					unexploredNode.setWaitingForExploration()
-					unexploredNodeReceiver <- unexploredNode
-				} else {
-					time.Sleep(time.Duration(5) * time.Millisecond)
-					unexploredNodeReceiverChannel <- unexploredNodeReceiver
+		case unexploredNodeReceiver := <-this.unexploredNodeReceiverChannel:
+			unexploredNode := this.rootNode.mostLikelyUnexploredDescendent
+			if unexploredNode != nil && this.rootNode.descendentCount < this.maxNodeCount {
+				if !unexploredNode.incrementReference() { // This will be decremenented once it's processed out of exploredNodeChannel
+					continue
 				}
+
+				if unexploredNode.explorationStatus != Unexplored {
+					unexploredNode.PrintLineage()
+					this.rootNode.PrintLineage()
+					log.Fatal(fmt.Sprintf("%p is not in Unexplored state! State: %d\n", unexploredNode, unexploredNode.explorationStatus))
+				}
+
+				unexploredNode.setWaitingForExploration()
+
+				unexploredNodeReceiver <- unexploredNode
+			} else {
+				time.Sleep(time.Duration(1) * time.Millisecond)
+				this.unexploredNodeReceiverChannel <- unexploredNodeReceiver
 			}
 		}
 
@@ -197,6 +205,8 @@ func NewExpectimax(game Game, heuristic ExpectimaxHeuristic, calculateChildLikel
 		NewBaseNode(game),
 		make(chan (chan<- interface{}), 10),
 		make(chan (chan<- *extensions.ValueMap), 10),
+		nil,
+		nil,
 		maxNodeCount,
 	}
 }
