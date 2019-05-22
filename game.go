@@ -6,10 +6,10 @@ import (
 
 type Game interface {
 	IsGameOver() bool
-	IsValidMoveGeneric(interface{}) bool
-	GetPossibleMovesGeneric() *extensions.InterfaceSlice
-	MakeMoveGeneric(interface{}) error
-	CloneGeneric() interface{}
-	RegisterMoveListenerGeneric(chan<- interface{})
+	IsValidMove(interface{}) bool
+	GetPossibleMoves() *extensions.InterfaceSlice
+	MakeMove(interface{}) error
+	Clone() interface{}
+	RegisterMoveListener(chan<- interface{})
 	Print()
 }

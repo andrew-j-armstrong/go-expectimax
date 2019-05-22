@@ -190,7 +190,7 @@ func (node *expectimaxNode) GetGame() Game {
 	defer node.decrementReference()
 
 	if node.game != nil {
-		return node.game.CloneGeneric().(Game)
+		return node.game.Clone().(Game)
 	}
 
 	parent := node.parent
@@ -204,7 +204,7 @@ func (node *expectimaxNode) GetGame() Game {
 		return nil
 	}
 
-	game.MakeMoveGeneric(node.lastMove)
+	game.MakeMove(node.lastMove)
 	return game
 }
 
@@ -309,7 +309,7 @@ func (node *expectimaxNode) setWaitingForExploration() {
 
 func NewBaseNode(game Game) *expectimaxNode {
 	node := getNewNode()
-	node.game = game.CloneGeneric().(Game)
+	node.game = game.Clone().(Game)
 	return node
 }
 
@@ -332,9 +332,9 @@ func (node *expectimaxNode) Explore(heuristic ExpectimaxHeuristic, calculateChil
 		return
 	}
 
-	for _, move := range *nodeGame.GetPossibleMovesGeneric() {
-		childGame := nodeGame.CloneGeneric().(Game)
-		childGame.MakeMoveGeneric(move)
+	for _, move := range *nodeGame.GetPossibleMoves() {
+		childGame := nodeGame.Clone().(Game)
+		childGame.MakeMove(move)
 
 		childHeuristic := heuristic(childGame)
 
@@ -397,6 +397,7 @@ func (node *expectimaxNode) calculateChildLikelihood(calculateChildLikelihoodFun
 		node.updateMostLikelyUnexploredDescendent(false, false)
 		parent.calculateChildLikelihood(calculateChildLikelihoodFunc, true)
 	} else {
+		node.value = value
 		node.updateMostLikelyUnexploredDescendent(recursive, false)
 	}
 }

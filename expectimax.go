@@ -78,7 +78,7 @@ func (this *Expectimax) RunExpectimax() {
 	this.rootNode = NewBaseNode(this.game)
 
 	moveListener := make(chan interface{}, 4)
-	this.game.RegisterMoveListenerGeneric(moveListener)
+	this.game.RegisterMoveListener(moveListener)
 
 	this.unexploredNodeReceiverChannel = make(chan chan<- *expectimaxNode, expectimaxWorkerCount)
 	this.exploredNodeChannel = make(chan *expectimaxNode, 10*expectimaxWorkerCount)
@@ -91,11 +91,14 @@ func (this *Expectimax) RunExpectimax() {
 	}
 
 	exploreNodeCount := 0
-
 	go func() {
+		lastExploreCount := 0
 		for {
 			time.Sleep(time.Second)
-			fmt.Printf("Explore Count: %d. Waiting workers: %d. Allocated nodes: %d. Expected result: %g\n", exploreNodeCount, len(this.unexploredNodeReceiverChannel), this.rootNode.descendentCount, this.rootNode.value)
+			if exploreNodeCount != 0 || lastExploreCount != 0 {
+				fmt.Printf("Explore Count: %d. Waiting workers: %d. Allocated nodes: %d. Expected result: %g\n", exploreNodeCount, len(this.unexploredNodeReceiverChannel), this.rootNode.descendentCount, this.rootNode.value)
+			}
+			lastExploreCount = exploreNodeCount
 			exploreNodeCount = 0
 		}
 	}()
