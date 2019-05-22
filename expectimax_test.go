@@ -3,7 +3,7 @@ package expectimax
 import (
 	"testing"
 
-	"github.com/carbon-12/go-extensions"
+	"github.com/andrew-j-armstrong/go-extensions"
 )
 
 func TestGetBestMove(t *testing.T) {

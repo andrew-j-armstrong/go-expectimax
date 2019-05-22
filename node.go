@@ -6,7 +6,7 @@ import (
 	"math"
 	"sync"
 
-	"github.com/carbon-12/go-extensions"
+	"github.com/andrew-j-armstrong/go-extensions"
 )
 
 type explorationStatus int
