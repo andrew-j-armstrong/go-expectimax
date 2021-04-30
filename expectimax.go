@@ -22,6 +22,7 @@ type Expectimax struct {
 	unexploredNodeReceiverChannel chan chan<- *expectimaxNode
 	exploredNodeChannel           chan *expectimaxNode
 	maxNodeCount                  int
+	printDebugMessages            bool
 }
 
 func (this *Expectimax) GetBestMove() interface{} {
@@ -91,17 +92,19 @@ func (this *Expectimax) RunExpectimax() {
 	}
 
 	exploreNodeCount := 0
-	go func() {
-		lastExploreCount := 0
-		for {
-			time.Sleep(time.Second)
-			if exploreNodeCount != 0 || lastExploreCount != 0 {
-				fmt.Printf("Explore Count: %d. Waiting workers: %d. Allocated nodes: %d. Expected result: %g\n", exploreNodeCount, len(this.unexploredNodeReceiverChannel), this.rootNode.descendentCount, this.rootNode.value)
+	if this.printDebugMessages {
+		go func() {
+			lastExploreCount := 0
+			for {
+				time.Sleep(time.Second)
+				if exploreNodeCount != 0 || lastExploreCount != 0 {
+					fmt.Printf("Explore Count: %d. Waiting workers: %d. Allocated nodes: %d. Expected result: %g\n", exploreNodeCount, len(this.unexploredNodeReceiverChannel), this.rootNode.descendentCount, this.rootNode.value)
+				}
+				lastExploreCount = exploreNodeCount
+				exploreNodeCount = 0
 			}
-			lastExploreCount = exploreNodeCount
-			exploreNodeCount = 0
-		}
-	}()
+		}()
+	}
 
 	for {
 		select {
@@ -211,5 +214,23 @@ func NewExpectimax(game Game, heuristic ExpectimaxHeuristic, calculateChildLikel
 		nil,
 		nil,
 		maxNodeCount,
+		false,
+	}
+}
+
+func NewDebugExpectimax(game Game, heuristic ExpectimaxHeuristic, calculateChildLikelihood ExpectimaxChildLikelihoodFunc, maxNodeCount int) *Expectimax {
+	initNodeMemoryPool()
+
+	return &Expectimax{
+		game,
+		heuristic,
+		calculateChildLikelihood,
+		NewBaseNode(game),
+		make(chan (chan<- interface{}), 10),
+		make(chan (chan<- *extensions.ValueMap), 10),
+		nil,
+		nil,
+		maxNodeCount,
+		true,
 	}
 }
